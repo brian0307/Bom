@@ -10,6 +10,7 @@ namespace BomDfsApp
     public class MainForm : Form
     {
         private Button btnLoadBom;
+        private Button btnLoadRouting;   // 新增：載入 Routing
         private Button btnExpandAll;
         private Button btnCollapseAll;
         private Button btnExport;
@@ -27,6 +28,10 @@ namespace BomDfsApp
         private DataTable _bomSorted = new();   // DFS 排序後 (完整炸開)
         private Dictionary<string, List<DataRow>> _childrenByParent = new();
 
+        // Routing 資料
+        private DataTable _routingRaw = new();  // 載入的 Routing
+        private Dictionary<string, List<DataRow>> _routingByChild = new();
+
         // 欄位名稱
         private readonly string COL_PARENT = "PARENT";
         private readonly string COL_CHILD = "CHILD";
@@ -38,6 +43,7 @@ namespace BomDfsApp
         private readonly string COL_ROOT = "ROOT";
         private readonly string COL_ISLEAF = "IS_LEAF";
         private readonly string COL_USED = "是否使用";
+        private readonly string COL_OPSEQ = "工序";   // Routing 的工序欄
 
         // 特性編碼值
         private string _featureCode = "";
@@ -46,16 +52,17 @@ namespace BomDfsApp
         // DataGridView 第一欄欄名 (展開 / 收合)
         private readonly string COL_EXPAND = "_EXPAND_";
 
-        // 用來記錄每一列對應的 DataRow & 是否已展開
+        // 用來記錄每一列對應的 DataRow & 是否已展開 & 是否為 Routing 列
         private class BomNodeState
         {
             public DataRow Row { get; set; } = null!;
             public bool IsExpanded { get; set; } = false;
+            public bool IsRouting { get; set; } = false; // true 表示這列是 Routing
         }
 
         public MainForm()
         {
-            Text = "BOM 樹狀展開工具";
+            Text = "BOM + Routing 樹狀展開工具";
             Width = 1200;
             Height = 720;
             StartPosition = FormStartPosition.CenterScreen;
@@ -68,10 +75,18 @@ namespace BomDfsApp
                 Width = 120,
                 Height = 30
             };
+            btnLoadRouting = new Button
+            {
+                Text = "載入 Routing",
+                Left = 160,
+                Top = 20,
+                Width = 120,
+                Height = 30
+            };
             btnExpandAll = new Button
             {
                 Text = "全部展開",
-                Left = 160,
+                Left = 300,
                 Top = 20,
                 Width = 120,
                 Height = 30
@@ -79,7 +94,7 @@ namespace BomDfsApp
             btnCollapseAll = new Button
             {
                 Text = "全部收合",
-                Left = 300,
+                Left = 440,
                 Top = 20,
                 Width = 120,
                 Height = 30
@@ -87,7 +102,7 @@ namespace BomDfsApp
             btnExport = new Button
             {
                 Text = "匯出 Excel",
-                Left = 440,
+                Left = 580,
                 Top = 20,
                 Width = 120,
                 Height = 30
@@ -95,7 +110,7 @@ namespace BomDfsApp
 
             lblFeature = new Label
             {
-                Left = 580,
+                Left = 720,
                 Top = 24,
                 Width = 80,
                 Height = 20,
@@ -103,26 +118,26 @@ namespace BomDfsApp
             };
             txtFeature = new TextBox
             {
-                Left = 660,
+                Left = 800,
                 Top = 20,
-                Width = 200,
+                Width = 150,
                 Height = 24,
                 ReadOnly = true
             };
 
             lblRoot = new Label
             {
-                Left = 880,
+                Left = 960,
                 Top = 24,
-                Width = 80,
+                Width = 60,
                 Height = 20,
                 Text = "ROOT:"
             };
             txtRoot = new TextBox
             {
-                Left = 960,
+                Left = 1020,
                 Top = 20,
-                Width = 200,
+                Width = 140,
                 Height = 24,
                 ReadOnly = true
             };
@@ -133,7 +148,7 @@ namespace BomDfsApp
                 Top = 60,
                 Width = 1100,
                 Height = 30,
-                Text = "請先載入 BOM（階層 / PARENT / CHILD / 組合項次 / FULL_PATH / 失效日期 / 特性編碼 ...）。"
+                Text = "請先載入 BOM，必要欄位：階層 / ROOT / PARENT / CHILD / 組合項次 / 特性編碼 / FULL_PATH / 是否使用 / IS_LEAF / 失效日期。"
             };
 
             dgv = new DataGridView
@@ -148,6 +163,7 @@ namespace BomDfsApp
             };
 
             Controls.Add(btnLoadBom);
+            Controls.Add(btnLoadRouting);
             Controls.Add(btnExpandAll);
             Controls.Add(btnCollapseAll);
             Controls.Add(btnExport);
@@ -159,6 +175,7 @@ namespace BomDfsApp
             Controls.Add(dgv);
 
             btnLoadBom.Click += BtnLoadBom_Click;
+            btnLoadRouting.Click += BtnLoadRouting_Click;
             btnExpandAll.Click += BtnExpandAll_Click;
             btnCollapseAll.Click += BtnCollapseAll_Click;
             btnExport.Click += BtnExport_Click;
@@ -171,7 +188,7 @@ namespace BomDfsApp
             using var ofd = new OpenFileDialog
             {
                 Filter = "Excel Files|*.xlsx;*.xlsm;*.xls",
-                Title = "選擇 Bom.xlsx"
+                Title = "選擇 BOM 檔"
             };
             if (ofd.ShowDialog() != DialogResult.OK) return;
 
@@ -193,10 +210,9 @@ namespace BomDfsApp
                 ShowOnlyLevel1();
 
                 txtRoot.Text = _rootCode;
-
                 txtFeature.Text = _featureCode;
 
-                lblInfo.Text = $"已載入：{_bomSorted.Rows.Count} 列 (已排除失效日期有值的列)。目前只顯示階層 = 1。";
+                lblInfo.Text = $"已載入 BOM：{_bomSorted.Rows.Count} 列 (已排除失效日期有值的列)。目前只顯示階層 = 1。";
             }
             catch (Exception ex)
             {
@@ -204,7 +220,30 @@ namespace BomDfsApp
             }
         }
 
-        // ================== 2. 全部展開 ==================
+        // ================== 1.5 載入 Routing ==================
+        private void BtnLoadRouting_Click(object? sender, EventArgs e)
+        {
+            using var ofd = new OpenFileDialog
+            {
+                Filter = "Excel Files|*.xlsx;*.xlsm;*.xls",
+                Title = "選擇 Routing 檔"
+            };
+            if (ofd.ShowDialog() != DialogResult.OK) return;
+
+            try
+            {
+                _routingRaw = LoadRoutingExcel(ofd.FileName);
+                BuildRoutingMap();
+
+                lblInfo.Text = $"已載入 Routing：{_routingRaw.Rows.Count} 列（依 CHILD + 工序 可掛到 BOM 上）。";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("載入 Routing 失敗： " + ex.Message);
+            }
+        }
+
+        // ================== 2. 全部展開（含 Routing） ==================
         private void BtnExpandAll_Click(object? sender, EventArgs e)
         {
             if (_bomSorted == null || _bomSorted.Rows.Count == 0)
@@ -215,16 +254,23 @@ namespace BomDfsApp
 
             dgv.Rows.Clear();
 
+            // 依 _bomSorted 順序：每筆 BOM → 底下掛 Routing（若有）
             foreach (DataRow row in _bomSorted.Rows)
             {
-                AddGridRowFromDataRow(row);
+                var bomRowIndex = AddGridRowFromDataRow(row);
+
+                string childKey = row[COL_CHILD]?.ToString()?.Trim() ?? "";
+                string levelText = row[COL_LEVEL]?.ToString()?.Trim() ?? "";
+
+                // 在這筆 BOM 底下掛上 Routing 製程（如果有）
+                InsertRoutingRows(childKey, levelText, null);
             }
 
-            // 所有有子階的節點設成「已展開」，符號顯示為 -
+            // 所有有 BOM 子階的節點設成「已展開」，符號顯示為 -
             for (int i = 0; i < dgv.Rows.Count; i++)
             {
                 var gr = dgv.Rows[i];
-                if (gr.Tag is BomNodeState state)
+                if (gr.Tag is BomNodeState state && !state.IsRouting)
                 {
                     string childKey = state.Row[COL_CHILD]?.ToString()?.Trim() ?? "";
                     if (!string.IsNullOrEmpty(childKey) &&
@@ -237,7 +283,7 @@ namespace BomDfsApp
                 }
             }
 
-            lblInfo.Text = $"全部展開：顯示 {_bomSorted.Rows.Count} 列。";
+            lblInfo.Text = $"全部展開：顯示 {dgv.Rows.Count} 列（含 Routing 製程）。";
         }
 
         // ================== 3. 全部收合（只剩階層 = 1） ==================
@@ -250,10 +296,10 @@ namespace BomDfsApp
             }
 
             ShowOnlyLevel1();
-            lblInfo.Text = "已收合：只顯示階層 = 1。";
+            lblInfo.Text = "已收合：只顯示階層 = 1（不顯示 Routing）。";
         }
 
-        // ================== 4. 匯出 Excel（同之前邏輯） ==================
+        // ================== 4. 匯出 Excel（目前只匯出 BOM，本來的邏輯） ==================
         private void BtnExport_Click(object? sender, EventArgs e)
         {
             if (_bomSorted == null || _bomSorted.Rows.Count == 0)
@@ -272,7 +318,7 @@ namespace BomDfsApp
             try
             {
                 ExportToExcelWithoutHelperCols(_bomSorted, sfd.FileName);
-                MessageBox.Show("匯出完成！");
+                MessageBox.Show("匯出完成！（目前匯出不含 Routing）");
             }
             catch (Exception ex)
             {
@@ -291,12 +337,14 @@ namespace BomDfsApp
             var row = dgv.Rows[e.RowIndex];
             if (row.Tag is not BomNodeState state) return;
 
+            // Routing 列不支援展開 / 收合
+            if (state.IsRouting) return;
+
             string childKey = state.Row[COL_CHILD]?.ToString()?.Trim() ?? "";
-            if (string.IsNullOrEmpty(childKey) ||
-                !_childrenByParent.ContainsKey(childKey) ||
-                _childrenByParent[childKey].Count == 0)
+            if (string.IsNullOrEmpty(childKey) &&
+                (_routingByChild.Count == 0 || !_routingByChild.ContainsKey(childKey)))
             {
-                return; // 沒有子階不用動
+                return; // 沒有任何 BOM 子階也沒有 Routing
             }
 
             if (state.IsExpanded)
@@ -305,44 +353,56 @@ namespace BomDfsApp
                 ExpandRow(e.RowIndex);
         }
 
-        // 展開某一列 (只展開下一階)
+        // 展開某一列 (展開下一 BOM 階層 + 掛上 Routing 製程)
         private void ExpandRow(int rowIndex)
         {
             var row = dgv.Rows[rowIndex];
             if (row.Tag is not BomNodeState state) return;
+            if (state.IsRouting) return; // Routing 列不展開
 
             string childKey = state.Row[COL_CHILD]?.ToString()?.Trim() ?? "";
-            if (!_childrenByParent.TryGetValue(childKey, out var children) || children.Count == 0)
+            if (string.IsNullOrEmpty(childKey))
                 return;
 
-            int insertIndex = rowIndex + 1;
-            foreach (var childRow in children)
-            {
-                // 如果已經在畫面上，就不要重複插入 (簡單判斷：看 Tag.Row 是否已存在)
-                bool alreadyVisible = false;
-                foreach (DataGridViewRow gr in dgv.Rows)
-                {
-                    if (gr.Tag is BomNodeState s && s.Row == childRow)
-                    {
-                        alreadyVisible = true;
-                        break;
-                    }
-                }
-                if (alreadyVisible) continue;
+            string levelText = state.Row[COL_LEVEL]?.ToString()?.Trim() ?? "";
 
-                AddGridRowFromDataRow(childRow, insertIndex);
-                insertIndex++;
+            int insertIndex = rowIndex + 1;
+
+            // 先插入 Routing 製程（如果有）
+            insertIndex = InsertRoutingRows(childKey, levelText, insertIndex);
+
+            // 再插入 BOM 子階（下一層 BOM）
+            if (_childrenByParent.TryGetValue(childKey, out var children) && children.Count > 0)
+            {
+                foreach (var childRow in children)
+                {
+                    // 如果已經在畫面上，就不要重複插入 (簡單判斷：看 Tag.Row 是否已存在且非 Routing)
+                    bool alreadyVisible = false;
+                    foreach (DataGridViewRow gr in dgv.Rows)
+                    {
+                        if (gr.Tag is BomNodeState s && !s.IsRouting && s.Row == childRow)
+                        {
+                            alreadyVisible = true;
+                            break;
+                        }
+                    }
+                    if (alreadyVisible) continue;
+
+                    AddGridRowFromDataRow(childRow, insertIndex);
+                    insertIndex++;
+                }
             }
 
             state.IsExpanded = true;
             row.Cells[COL_EXPAND].Value = "-";
         }
 
-        // 收合某一列 (移除所有後續、階層比自己大的列)
+        // 收合某一列 (移除所有後續、階層比自己大的 BOM 列 + 所有 Routing 列)
         private void CollapseRow(int rowIndex)
         {
             var row = dgv.Rows[rowIndex];
             if (row.Tag is not BomNodeState state) return;
+            if (state.IsRouting) return;
 
             int myLevel = ParseInt(state.Row[COL_LEVEL]);
             int i = rowIndex + 1;
@@ -350,21 +410,39 @@ namespace BomDfsApp
             while (i < dgv.Rows.Count)
             {
                 var gr = dgv.Rows[i];
-                if (gr.Tag is not BomNodeState s) { i++; continue; }
+                if (gr.Tag is not BomNodeState s)
+                {
+                    i++;
+                    continue;
+                }
 
+                // Routing 列一律刪掉
+                if (s.IsRouting)
+                {
+                    dgv.Rows.RemoveAt(i);
+                    continue;
+                }
+
+                // BOM 列：遇到階層 <= 自己就停止（同層或上層）
                 int level = ParseInt(s.Row[COL_LEVEL]);
                 if (level <= myLevel)
-                    break;      // 到同層或更上層就停
+                    break;
 
-                dgv.Rows.RemoveAt(i); // 不用 i++，因為移除後下一列會補上來
+                // 其餘 BOM 列（比自己深的階層）全部刪掉
+                dgv.Rows.RemoveAt(i);
             }
 
             state.IsExpanded = false;
-            // 收合後，恢復成有子階就顯示 '+'
+
             string childKey = state.Row[COL_CHILD]?.ToString()?.Trim() ?? "";
-            if (!string.IsNullOrEmpty(childKey) &&
-                _childrenByParent.ContainsKey(childKey) &&
-                _childrenByParent[childKey].Count > 0)
+            bool hasBomChildren = !string.IsNullOrEmpty(childKey) &&
+                                  _childrenByParent.ContainsKey(childKey) &&
+                                  _childrenByParent[childKey].Count > 0;
+            bool hasRouting = !string.IsNullOrEmpty(childKey) &&
+                              _routingByChild.ContainsKey(childKey) &&
+                              _routingByChild[childKey].Count > 0;
+
+            if (hasBomChildren || hasRouting)
             {
                 row.Cells[COL_EXPAND].Value = "+";
             }
@@ -376,7 +454,7 @@ namespace BomDfsApp
 
         // ================== 內部小工具 ==================
 
-        // 讀 BOM Excel：過濾失效日期、抓特性編碼
+        // 讀 BOM Excel：過濾失效日期、抓特性編碼 / ROOT
         private DataTable LoadBomExcel(string path)
         {
             using var wb = new XLWorkbook(path);
@@ -464,6 +542,73 @@ namespace BomDfsApp
 
             dt.AcceptChanges();
             return dt;
+        }
+
+        // 讀 Routing Excel（不過濾失效日期，如果之後你要一樣過濾很容易加）
+        private DataTable LoadRoutingExcel(string path)
+        {
+            using var wb = new XLWorkbook(path);
+            var ws = wb.Worksheet(1);  // 第一個工作表
+
+            var dt = new DataTable();
+            bool firstRow = true;
+
+            foreach (var row in ws.RowsUsed())
+            {
+                if (firstRow)
+                {
+                    foreach (var cell in row.CellsUsed())
+                        dt.Columns.Add(cell.GetString().Trim());
+                    firstRow = false;
+                }
+                else
+                {
+                    var newRow = dt.NewRow();
+                    int colIndex = 0;
+                    foreach (var cell in row.Cells(1, dt.Columns.Count))
+                    {
+                        newRow[colIndex++] = cell.Value;
+                    }
+                    dt.Rows.Add(newRow);
+                }
+            }
+
+            if (!dt.Columns.Contains(COL_CHILD) ||
+                !dt.Columns.Contains(COL_OPSEQ))
+                throw new Exception("Routing 檔缺少必要欄位：CHILD / 工序。");
+
+            dt.AcceptChanges();
+            return dt;
+        }
+
+        // Routing 索引：CHILD -> 依工序排序的 DataRow 列表
+        private void BuildRoutingMap()
+        {
+            _routingByChild = _routingRaw.AsEnumerable()
+                .Where(r => !IsNullOrWhiteSpace(r, COL_CHILD))
+                .GroupBy(r => r[COL_CHILD].ToString().Trim())
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.OrderBy(r => ParseOpSeq(r[COL_OPSEQ]))
+                          .ThenBy(r => r.Table.Rows.IndexOf(r))
+                          .ToList(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+        }
+
+        private static bool IsNullOrWhiteSpace(DataRow row, string colName)
+        {
+            if (!row.Table.Columns.Contains(colName)) return true;
+            var v = row[colName];
+            if (v == null || v == DBNull.Value) return true;
+            return string.IsNullOrWhiteSpace(v.ToString());
+        }
+
+        private static int ParseOpSeq(object? v)
+        {
+            if (v == null || v == DBNull.Value) return int.MaxValue;
+            var s = v.ToString()?.Trim();
+            return int.TryParse(s, out var n) ? n : int.MaxValue;
         }
 
         // 建 DFS 順序 (跟之前版本一樣)
@@ -555,7 +700,7 @@ namespace BomDfsApp
             return result;
         }
 
-        // 建 Parent -> Children 對照
+        // 建 Parent -> Children 對照（只有 BOM 用）
         private void BuildChildrenMap()
         {
             _childrenByParent = new Dictionary<string, List<DataRow>>(StringComparer.OrdinalIgnoreCase);
@@ -619,15 +764,26 @@ namespace BomDfsApp
 
                 dgv.Columns.Add(gridCol);
             }
+
+            // 如果目前沒有「工序」這個欄位，額外加一個（給 Routing 用）
+            if (!dgv.Columns.Contains(COL_OPSEQ))
+            {
+                var opCol = new DataGridViewTextBoxColumn
+                {
+                    Name = COL_OPSEQ,
+                    HeaderText = COL_OPSEQ,
+                    ReadOnly = true
+                };
+                dgv.Columns.Add(opCol);
+            }
         }
 
-        // 新增一列到 DataGridView（附帶 Tag / 展開符號）
-        private void AddGridRowFromDataRow(DataRow srcRow, int? insertIndex = null)
+        // 新增一列 BOM 到 DataGridView（附帶 Tag / 展開符號）
+        private int AddGridRowFromDataRow(DataRow srcRow, int? insertIndex = null)
         {
             int rowIndex;
             if (insertIndex.HasValue)
             {
-                // Insert 不會回傳 int，所以先插入，再把 rowIndex 設成插入點
                 dgv.Rows.Insert(insertIndex.Value, 1);
                 rowIndex = insertIndex.Value;
             }
@@ -638,28 +794,117 @@ namespace BomDfsApp
 
             var gr = dgv.Rows[rowIndex];
 
-            var state = new BomNodeState { Row = srcRow, IsExpanded = false };
+            var state = new BomNodeState { Row = srcRow, IsExpanded = false, IsRouting = false };
             gr.Tag = state;
 
             string childKey = srcRow[COL_CHILD]?.ToString()?.Trim() ?? "";
-            bool hasChildren = !string.IsNullOrEmpty(childKey) &&
-                               _childrenByParent.ContainsKey(childKey) &&
-                               _childrenByParent[childKey].Count > 0;
+            bool hasBomChildren = !string.IsNullOrEmpty(childKey) &&
+                                  _childrenByParent.ContainsKey(childKey) &&
+                                  _childrenByParent[childKey].Count > 0;
+            bool hasRouting = !string.IsNullOrEmpty(childKey) &&
+                              _routingByChild.ContainsKey(childKey) &&
+                              _routingByChild[childKey].Count > 0;
 
-            gr.Cells[COL_EXPAND].Value = hasChildren ? "+" : "";
+            gr.Cells[COL_EXPAND].Value = (hasBomChildren || hasRouting) ? "+" : "";
 
             // 填其他欄位
             foreach (DataGridViewColumn col in dgv.Columns)
             {
                 if (col.Name == COL_EXPAND) continue;
 
-                var value = srcRow[col.Name];
+                object? value = null;
+                if (srcRow.Table.Columns.Contains(col.Name))
+                {
+                    value = srcRow[col.Name];
+                }
+
                 gr.Cells[col.Name].Value =
                     value == null || value == DBNull.Value ? "" : value.ToString();
             }
+
+            return rowIndex;
         }
 
-        // 只顯示階層 = 1
+        // 新增一列 Routing 到 DataGridView（階層顯示成 1R / 2R / ...）
+        private int AddRoutingGridRow(DataRow routingRow, string baseLevelText, int? insertIndex = null)
+        {
+            int rowIndex;
+            if (insertIndex.HasValue)
+            {
+                dgv.Rows.Insert(insertIndex.Value, 1);
+                rowIndex = insertIndex.Value;
+            }
+            else
+            {
+                rowIndex = dgv.Rows.Add();
+            }
+
+            var gr = dgv.Rows[rowIndex];
+
+            var state = new BomNodeState { Row = routingRow, IsExpanded = false, IsRouting = true };
+            gr.Tag = state;
+
+            // Routing 列不展開
+            gr.Cells[COL_EXPAND].Value = "";
+
+            foreach (DataGridViewColumn col in dgv.Columns)
+            {
+                if (col.Name == COL_EXPAND) continue;
+
+                if (col.Name == COL_LEVEL)
+                {
+                    // 階層顯示成 1R / 2R / 3R ...
+                    gr.Cells[col.Name].Value = string.IsNullOrEmpty(baseLevelText)
+                        ? "R"
+                        : baseLevelText + "R";
+                    continue;
+                }
+
+                object? value = null;
+                if (routingRow.Table.Columns.Contains(col.Name))
+                {
+                    value = routingRow[col.Name];
+                }
+
+                gr.Cells[col.Name].Value =
+                    value == null || value == DBNull.Value ? "" : value.ToString();
+            }
+
+            return rowIndex;
+        }
+
+        // 針對某個 CHILD，在指定位置插入所有 Routing 列
+        // 回傳：插入完後的下一個 index（方便後面接 BOM 子階）
+        private int InsertRoutingRows(string childKey, string baseLevelText, int? insertIndex)
+        {
+            if (string.IsNullOrEmpty(childKey)) return insertIndex ?? dgv.Rows.Count;
+            if (!_routingByChild.TryGetValue(childKey, out var ops) || ops.Count == 0)
+                return insertIndex ?? dgv.Rows.Count;
+
+            int idx = insertIndex ?? dgv.Rows.Count;
+
+            foreach (var opRow in ops)
+            {
+                // 已經在畫面上就不要重複插入
+                bool alreadyVisible = false;
+                foreach (DataGridViewRow gr in dgv.Rows)
+                {
+                    if (gr.Tag is BomNodeState s && s.IsRouting && s.Row == opRow)
+                    {
+                        alreadyVisible = true;
+                        break;
+                    }
+                }
+                if (alreadyVisible) continue;
+
+                AddRoutingGridRow(opRow, baseLevelText, idx);
+                idx++;
+            }
+
+            return idx;
+        }
+
+        // 只顯示階層 = 1（只顯示 BOM 的第一層，不顯示任何 Routing）
         private void ShowOnlyLevel1()
         {
             dgv.Rows.Clear();
@@ -678,11 +923,20 @@ namespace BomDfsApp
         {
             if (v == null || v == DBNull.Value) return int.MaxValue;
             var s = v.ToString()?.Trim();
-            if (int.TryParse(s, out var n)) return n;
-            return int.MaxValue;
+
+            // 若 s 是 "1R" 之類的，取前面的數字
+            if (!string.IsNullOrEmpty(s))
+            {
+                int i = 0;
+                while (i < s.Length && char.IsDigit(s[i])) i++;
+                if (i > 0 && int.TryParse(s.Substring(0, i), out var n))
+                    return n;
+            }
+
+            return int.TryParse(s, out var n2) ? n2 : int.MaxValue;
         }
 
-        // 匯出（排除 PARENT / 組合項次 / FULL_PATH / 特性編碼）
+        // 匯出（排除 PARENT / 組合項次 / FULL_PATH / 特性編碼 / ROOT / IS_LEAF / 是否使用）
         private void ExportToExcelWithoutHelperCols(DataTable dt, string path)
         {
             using var wb = new XLWorkbook();
