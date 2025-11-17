@@ -16,9 +16,11 @@ namespace BomDfsApp
         private DataGridView dgv;
         private Label lblInfo;
 
-        // 特性編碼顯示
+        // 特性編碼跟Root顯示
         private Label lblFeature;
         private TextBox txtFeature;
+        private Label lblRoot;
+        private TextBox txtRoot;
 
         // BOM 資料
         private DataTable _bomRaw = new();      // 讀檔＋過濾失效日期後
@@ -33,9 +35,13 @@ namespace BomDfsApp
         private readonly string COL_EXPIRE = "失效日期";
         private readonly string COL_FEATURE = "特性編碼";
         private readonly string COL_LEVEL = "階層";
+        private readonly string COL_ROOT = "ROOT";
+        private readonly string COL_ISLEAF = "IS_LEAF";
+        private readonly string COL_USED = "是否使用";
 
         // 特性編碼值
         private string _featureCode = "";
+        private string _rootCode = "";
 
         // DataGridView 第一欄欄名 (展開 / 收合)
         private readonly string COL_EXPAND = "_EXPAND_";
@@ -104,6 +110,23 @@ namespace BomDfsApp
                 ReadOnly = true
             };
 
+            lblRoot = new Label
+            {
+                Left = 880,
+                Top = 24,
+                Width = 80,
+                Height = 20,
+                Text = "ROOT:"
+            };
+            txtRoot = new TextBox
+            {
+                Left = 960,
+                Top = 20,
+                Width = 200,
+                Height = 24,
+                ReadOnly = true
+            };
+
             lblInfo = new Label
             {
                 Left = 20,
@@ -128,6 +151,8 @@ namespace BomDfsApp
             Controls.Add(btnExpandAll);
             Controls.Add(btnCollapseAll);
             Controls.Add(btnExport);
+            Controls.Add(lblRoot);
+            Controls.Add(txtRoot);
             Controls.Add(lblFeature);
             Controls.Add(txtFeature);
             Controls.Add(lblInfo);
@@ -166,6 +191,8 @@ namespace BomDfsApp
 
                 // 一開始只顯示 Level = 1
                 ShowOnlyLevel1();
+
+                txtRoot.Text = _rootCode;
 
                 txtFeature.Text = _featureCode;
 
@@ -389,6 +416,7 @@ namespace BomDfsApp
 
             bool hasExpire = dt.Columns.Contains(COL_EXPIRE);
             bool hasFeature = dt.Columns.Contains(COL_FEATURE);
+            bool hasRoot = dt.Columns.Contains(COL_ROOT);
 
             // 抓特性編碼
             _featureCode = "";
@@ -400,6 +428,21 @@ namespace BomDfsApp
                     if (!string.IsNullOrEmpty(v))
                     {
                         _featureCode = v;
+                        break;
+                    }
+                }
+            }
+
+            // 抓 ROOT（第一個非空的 ROOT）
+            _rootCode = "";
+            if (hasRoot)
+            {
+                foreach (DataRow r in dt.Rows)
+                {
+                    var v = r[COL_ROOT]?.ToString()?.Trim();
+                    if (!string.IsNullOrEmpty(v))
+                    {
+                        _rootCode = v;
                         break;
                     }
                 }
@@ -555,7 +598,10 @@ namespace BomDfsApp
                 if (string.Equals(col.ColumnName, COL_PARENT, StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(col.ColumnName, COL_SEQ, StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(col.ColumnName, COL_FULLPATH, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(col.ColumnName, COL_FEATURE, StringComparison.OrdinalIgnoreCase))
+                    string.Equals(col.ColumnName, COL_FEATURE, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(col.ColumnName, COL_ROOT, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(col.ColumnName, COL_ISLEAF, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(col.ColumnName, COL_USED, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;   // 不顯示的欄位
                 }
@@ -648,7 +694,10 @@ namespace BomDfsApp
                     !string.Equals(c.ColumnName, COL_PARENT, StringComparison.OrdinalIgnoreCase) &&
                     !string.Equals(c.ColumnName, COL_SEQ, StringComparison.OrdinalIgnoreCase) &&
                     !string.Equals(c.ColumnName, COL_FULLPATH, StringComparison.OrdinalIgnoreCase) &&
-                    !string.Equals(c.ColumnName, COL_FEATURE, StringComparison.OrdinalIgnoreCase))
+                    !string.Equals(c.ColumnName, COL_FEATURE, StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(c.ColumnName, COL_ROOT, StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(c.ColumnName, COL_ISLEAF, StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(c.ColumnName, COL_USED, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
             int col = 1;
